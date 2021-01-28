@@ -10,6 +10,7 @@ module Finance.IBAN.Data
   , IBANStricture(..)
   , toElemP
   , StructElem
+  , elemP
   ) where
 
 import Data.Text (Text, pack)
@@ -143,9 +144,9 @@ elemP = StructElem <$> lenP  <*> reprP where
     reprP = satisfy (inClass "nace")
     
     lenP :: Parser Len
-    lenP = mkLen <$> nnP <*> peekChar <* skipIfFound '!' where
-      mkLen x (Just '!') = Fixed x
-      mkLen x _  = Max x
+    lenP = fixedP <|> maxP where
+      fixedP = Fixed <$> nnP <* char '!'
+      maxP = Max <$> nnP
     
     nnP :: Parser Int
     nnP = do
