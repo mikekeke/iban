@@ -78,10 +78,13 @@ structures = [ "AL2!n8!n16!c"
 isCompliant :: Char -> Bool
 isCompliant = (`member` compliantChars)
 
+n :: [Char]
+n = ['0'..'9']  
+a :: [Char]
+a = ['A'..'Z' ] 
+c :: [Char]
+c = n ++ a ++ ['a' .. 'z'] 
+
 compliantChars :: Set Char
-compliantChars = fromList $
-                  ['0'..'9']   -- n
-               ++ ['A'..'Z' ]  -- a
-               ++ ['a' .. 'z'] -- together with `n` and `a` forms `c`
-               ++ [' ']
+compliantChars = fromList $ c ++ [' ']
                

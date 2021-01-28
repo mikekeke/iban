@@ -26,6 +26,9 @@ import qualified Data.Text as T
 import           Data.Typeable (Typeable)
 import qualified Finance.IBAN.Data as Data
 import           Text.Read (Lexeme(Ident), Read(readPrec), parens, prec, readMaybe, readPrec, lexP)
+import Control.Monad ((>=>))
+import Debug.Trace (traceShowId)
+import Data.Function ((&))
 
 newtype IBAN = IBAN {rawIBAN :: Text}
   deriving (Eq, Typeable)
@@ -62,6 +65,9 @@ data IBANError =
 
 data SElement = SElement (Char -> Bool) Int Bool
 
+instance Show SElement where
+  show (SElement _ i b) = "SElement: " ++ show i ++ " " ++ show b
+
 type BBANStructure = [SElement]
 
 -- | show a IBAN in 4-blocks
@@ -70,20 +76,28 @@ prettyIBAN (IBAN str) = T.intercalate " " $ T.chunksOf 4 str
 
 -- | try to parse an IBAN
 parseIBAN :: Text -> Either IBANError IBAN
-parseIBAN str
-  | wrongChars = Left IBANInvalidCharacters
-  | wrongChecksum = Left IBANWrongChecksum
-  | otherwise = do
-                  country <- left IBANInvalidCountry $ countryEither s
-                  structure <- note (IBANInvalidCountry $ T.take 2 s) $
-                                    M.lookup country countryStructures
-                  if checkStructure structure s
-                    then Right $ IBAN s
-                    else Left IBANInvalidStructure
-  where
-    s              = T.filter (/= ' ') str
-    wrongChars     = T.any (not . Data.isCompliant) s
-    wrongChecksum  = 1 /= mod97_10 s
+parseIBAN str = do
+  s <- removeSpaces str & validateChars >>= validateChecksum 
+  country <- left IBANInvalidCountry $ countryEither s
+  structure <- note (IBANInvalidCountry $ T.take 2 s) $
+                    M.lookup country countryStructures
+  if checkStructure (traceShowId structure) s
+    then Right $ IBAN s
+    else Left IBANInvalidStructure
+    
+validateChars :: Text -> Either IBANError Text
+validateChars cs = if T.any (not . Data.isCompliant) cs
+                   then Left IBANInvalidCharacters
+                   else Right cs
+                   
+validateChecksum :: Text -> Either IBANError Text
+validateChecksum cs = if 1 /= mod97_10 cs
+                      then Left IBANWrongChecksum
+                      else Right cs
+                      
+removeSpaces :: Text -> Text
+removeSpaces = T.filter (/= ' ')
+
 
 checkStructure :: BBANStructure -> Text -> Bool
 checkStructure structure s = isNothing $ foldl' step (Just s) structure
