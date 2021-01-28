@@ -1,5 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE RecordWildCards #-}
 module Finance.IBAN.Internal
   ( IBAN(..)
   , IBANError(..)
@@ -8,8 +9,8 @@ module Finance.IBAN.Internal
   , SElement
   , country
   , checkStructure
-  , parseStructure
-  , countryStructures
+--  , parseStructure
+--  , countryStructures
   , mod97_10
   ) where
 
@@ -21,7 +22,7 @@ import           Data.ISO3166_CountryCodes (CountryCode)
 import           Data.List (foldl')
 import           Data.Maybe (isNothing)
 import           Data.String (IsString, fromString)
-import           Data.Text (Text)
+import           Data.Text (Text, unpack)
 import qualified Data.Text as T
 import           Data.Typeable (Typeable)
 import qualified Finance.IBAN.Data as Data
@@ -29,6 +30,9 @@ import           Text.Read (Lexeme(Ident), Read(readPrec), parens, prec, readMay
 import Control.Monad ((>=>))
 import Debug.Trace (traceShowId)
 import Data.Function ((&))
+import Data.Attoparsec.Text as P
+import Finance.IBAN.Data (toElemP)
+import Finance.IBAN.Data (countryP)
 
 newtype IBAN = IBAN {rawIBAN :: Text}
   deriving (Eq, Typeable)
@@ -55,7 +59,8 @@ countryEither :: Text -> Either Text CountryCode
 countryEither s = readNote' s $ T.take 2 s
 
 data IBANError =
-    IBANInvalidCharacters   -- ^ The IBAN string contains invalid characters.
+    IBANError1 Text
+  | IBANInvalidCharacters   -- ^ The IBAN string contains invalid characters.
   | IBANInvalidStructure    -- ^ The IBAN string has the wrong structure.
   | IBANWrongChecksum       -- ^ The checksum does not match.
   | IBANInvalidCountry Text -- ^ The country identifier is either not a
@@ -74,30 +79,56 @@ type BBANStructure = [SElement]
 prettyIBAN :: IBAN -> Text
 prettyIBAN (IBAN str) = T.intercalate " " $ T.chunksOf 4 str
 
+data ValidatedBBAN = ValidatedBBAN {unBban :: [Text]} deriving Show
+data ValidatedIBAN = ValidatedIBAN {code :: CountryCode, checkDigs :: Int, bban :: ValidatedBBAN} deriving Show
+toString :: ValidatedIBAN -> Text
+toString ValidatedIBAN{..} = (T.pack . mconcat $ [ show code , show checkDigs]) <> bbanText where
+  bbanText :: Text
+  bbanText = mconcat . unBban $ bban
+
+
 -- | try to parse an IBAN
 parseIBAN :: Text -> Either IBANError IBAN
 parseIBAN str = do
-  s <- removeSpaces str & validateChars >>= validateChecksum 
-  country <- left IBANInvalidCountry $ countryEither s
-  structure <- note (IBANInvalidCountry $ T.take 2 s) $
-                    M.lookup country countryStructures
-  if checkStructure (traceShowId structure) s
-    then Right $ IBAN s
-    else Left IBANInvalidStructure
-    
+  validIBAN <- validateIBAN str
+  return $ IBAN (toString validIBAN)
+
+validateIBAN :: Text -> Either IBANError ValidatedIBAN
+validateIBAN str = do
+  s <- removeSpaces str & validateChars >>= validateChecksum
+  ccode <- left (IBANInvalidCountry . T.pack) $ parseOnly countryP s
+  struct <- left (IBANError1 . T.pack) $ Data.findByCountry ccode
+  left (const IBANInvalidStructure) $ parseOnly (ibanP struct) s --todo better error message
+
+ibanP :: Data.IBANStricture -> Parser ValidatedIBAN
+ibanP Data.IBANStricture{..} = do
+  ccode <- countryP
+  chDigs <- chDigsP checkDigitsStructure
+  bban <- parseBBAN bbanStructure
+  endOfInput
+  return $ ValidatedIBAN ccode chDigs (ValidatedBBAN bban)
+
+chDigsP :: Data.StructElem ->  Parser Int
+chDigsP se = do
+  v <- toElemP se
+  maybe (fail "Error parsing check digits") pure (readMaybe $ unpack v)
+
+parseBBAN :: [Data.StructElem] -> Parser [Text]
+parseBBAN = traverse toElemP
+
+-- todo tests for validation
 validateChars :: Text -> Either IBANError Text
 validateChars cs = if T.any (not . Data.isCompliant) cs
                    then Left IBANInvalidCharacters
                    else Right cs
-                   
+
 validateChecksum :: Text -> Either IBANError Text
 validateChecksum cs = if 1 /= mod97_10 cs
                       then Left IBANWrongChecksum
                       else Right cs
-                      
+
 removeSpaces :: Text -> Text
 removeSpaces = T.filter (/= ' ')
-
 
 checkStructure :: BBANStructure -> Text -> Bool
 checkStructure structure s = isNothing $ foldl' step (Just s) structure
