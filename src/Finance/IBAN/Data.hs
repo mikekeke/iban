@@ -6,11 +6,13 @@ module Finance.IBAN.Data
   , countryP
   , ibanStrP
   , parseStructures
-  , findByCountry
+  , ibanStructureByCountry
   , IBANStricture(..)
-  , toElemP
+  , BBANStructure
+  , toIBANElementP
   , StructElem
   , elemP
+  , uniqueBBANStructures
   ) where
 
 import Data.Text (Text, pack)
@@ -21,8 +23,10 @@ import Control.Applicative ((<|>))
 import Data.ISO3166_CountryCodes (CountryCode)
 import Data.Char (isLetter, toUpper)
 import Text.Read (readMaybe)
-import qualified Data.Map.Strict as M (Map, fromList, lookup)
+import qualified Data.Map.Strict as M (Map, fromList, lookup, elems)
 import Debug.Trace (traceShowId)
+import GHC.Stack (HasCallStack)
+import Data.Either (fromRight)
 
 structures :: [Text]
 structures = [ "AL2!n8!n16!c"
@@ -107,14 +111,14 @@ c = n ++ a ++ ['a' .. 'z']
 compliantChars :: Set Char
 compliantChars = fromList $ c ++ [' ']
 
-data Len = Fixed Int | Max Int deriving Show
+data Len = Fixed !Int | Max !Int deriving (Eq, Ord, Show)
 
-data StructElem = StructElem { len :: Len, repr :: Char } deriving Show
-
+data StructElem = StructElem { len :: !Len, repr :: !Char } deriving (Eq, Ord, Show)
+type BBANStructure = [StructElem]
 data IBANStricture = 
   IBANStricture { countryCode :: !CountryCode
                 , checkDigitsStructure :: !StructElem
-                , bbanStructure :: [StructElem]
+                , bbanStructure :: !BBANStructure
                 }
 
 instance Show IBANStricture where
@@ -139,14 +143,12 @@ countryP = do
   <?> "Country code parser"
                 
 elemP :: Parser StructElem
-elemP = StructElem <$> lenP  <*> reprP where
+elemP = StructElem <$> lenP  <*> reprP <?> "IBAN structure element parser" where
     reprP :: Parser Char
     reprP = satisfy (inClass "nace")
     
     lenP :: Parser Len
-    lenP = fixedP <|> maxP where
-      fixedP = Fixed <$> nnP <* char '!'
-      maxP = Max <$> nnP
+    lenP = (Fixed <$> nnP <* char '!') <|> (Max <$> nnP)
     
     nnP :: Parser Int
     nnP = do
@@ -154,23 +156,20 @@ elemP = StructElem <$> lenP  <*> reprP where
       guard (Prelude.length v `elem` [1,2])
       return $ read v
       
-skipIfFound :: Char -> Parser ()
-skipIfFound skipC = skip (==skipC) <|> pure ()
+reprToParser :: Char -> Parser Char
+reprToParser 'n' = satisfy $ inClass n
+reprToParser 'a' = satisfy $ inClass a
+reprToParser 'c' = satisfy $ inClass c
+reprToParser 'e' = satisfy (==' ')
+reprToParser other = fail $ "No representation in IBAN structure for '" ++ [other] ++"'"
 
-toParser :: Char -> Parser Char
-toParser 'n' = satisfy $ inClass n
-toParser 'a' = satisfy $ inClass a
-toParser 'c' = satisfy $ inClass c
-toParser 'e' = satisfy (==' ')
-toParser _ = error "unexpected - fixme to Either maybe"
-
-toElemP :: StructElem -> Parser Text
-toElemP (StructElem (Fixed x) typ) = do
-   v <- P.count x (toParser typ)
+toIBANElementP :: StructElem -> Parser Text
+toIBANElementP (StructElem (Fixed x) typ) = do
+   v <- P.count x (reprToParser typ)
    return $ pack v
 
-toElemP (StructElem (Max x) typ) = do
-  v <- P.many1 (toParser typ)
+toIBANElementP (StructElem (Max x) typ) = do
+  v <- P.many1 (reprToParser typ)
   guard (Prelude.length v <= x)
   return $ pack v
 
@@ -181,9 +180,14 @@ parseStructures ss = do
   let pre = fmap (\struct -> (countryCode struct, struct)) res
   return $ M.fromList pre
 
+parsedStructures :: HasCallStack => M.Map CountryCode IBANStricture
+parsedStructures = fromRight
+                    (error "Critical error: can't parse IBAN structures")
+                    (parseStructures structures)
 
-findByCountry :: CountryCode -> Either String IBANStricture
-findByCountry cc = do
-   ss <- parseStructures structures
-   maybe (Left "Not found") Right  (M.lookup cc ss)
 
+ibanStructureByCountry :: CountryCode -> Maybe IBANStricture
+ibanStructureByCountry cc = M.lookup cc parsedStructures
+
+uniqueBBANStructures :: Set BBANStructure
+uniqueBBANStructures = fromList $ bbanStructure <$> M.elems parsedStructures
